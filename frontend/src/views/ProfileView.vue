@@ -2,6 +2,7 @@
 import { ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useUserStore } from '@/stores/user'
+import api from '@/utils/api'
 
 const router = useRouter()
 const userStore = useUserStore()
@@ -20,24 +21,11 @@ const updateProfile = async () => {
   error.value = ''
   
   try {
-    const res = await fetch('/api/user/profile', {
-      method: 'PUT',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${userStore.token}`
-      },
-      body: JSON.stringify({ nickname: nickname.value })
-    })
-    
-    if (res.ok) {
-      await userStore.getUserInfo()
-      error.value = '更新成功'
-    } else {
-      const data = await res.json()
-      error.value = data.detail || '更新失败'
-    }
-  } catch (e) {
-    error.value = '网络错误'
+    await api.put('/user/profile', { nickname: nickname.value })
+    await userStore.getUserInfo()
+    error.value = '更新成功'
+  } catch (e: any) {
+    error.value = e.message || '网络错误'
   } finally {
     loading.value = false
   }

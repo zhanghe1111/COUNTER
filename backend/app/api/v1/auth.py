@@ -21,11 +21,18 @@ oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/login")
 
 def verify_password(plain_password, hashed_password):
     """验证密码"""
+    # bcrypt限制72字节，超过则截断
+    pwd_bytes = plain_password.encode('utf-8')
+    if len(pwd_bytes) > 72:
+        plain_password = pwd_bytes[:72].decode('utf-8', 'ignore')
     return pwd_context.verify(plain_password, hashed_password)
 
 
 def get_password_hash(password):
     """获取密码哈希"""
+    pwd_bytes = password.encode('utf-8')
+    if len(pwd_bytes) > 72:
+        password = pwd_bytes[:72].decode('utf-8', 'ignore')
     return pwd_context.hash(password)
 
 
@@ -71,6 +78,14 @@ def register(user: UserCreate, db: Session = Depends(get_db)):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Username already registered"
+        )
+    
+    # 检查密码长度（bcrypt限制72字节）
+    password_bytes = user.password.encode('utf-8')
+    if len(password_bytes) > 72:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Password cannot be longer than 72 bytes (current: {len(password_bytes)} bytes)"
         )
     
     # 创建新用户

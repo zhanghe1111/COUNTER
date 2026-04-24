@@ -1,10 +1,18 @@
 <script setup lang="ts">
-import { ref, reactive } from 'vue'
+import { ref, reactive, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useUserStore } from '@/stores/user'
+import api from '@/utils/api'
 
 const router = useRouter()
 const userStore = useUserStore()
+
+// 页面加载时检查登录状态
+onMounted(() => {
+  if (!userStore.isLoggedIn) {
+    router.push('/login')
+  }
+})
 
 const form = reactive({
   name: '',
@@ -28,31 +36,18 @@ const handleSubmit = async () => {
   error.value = ''
   
   try {
-    const res = await fetch('/api/rooms', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${userStore.token}`
-      },
-      body: JSON.stringify({
-        name: form.name,
-        game_type: form.gameType,
-        base_score: form.baseScore,
-        elimination_score: form.eliminationScore,
-        winning_score: form.winningScore,
-        password: form.password
-      })
+    const res = await api.post('/rooms', {
+      name: form.name,
+      game_type: form.gameType,
+      base_score: form.baseScore,
+      elimination_score: form.eliminationScore,
+      winning_score: form.winningScore,
+      password: form.password
     })
     
-    if (res.ok) {
-      const data = await res.json()
-      router.push(`/room/${data.room_code}`)
-    } else {
-      const data = await res.json()
-      error.value = data.detail || '创建房间失败'
-    }
-  } catch (e) {
-    error.value = '网络错误，请稍后重试'
+    router.push(`/room/${res.data.room_code}`)
+  } catch (e: any) {
+    error.value = e.message || '网络错误，请稍后重试'
   } finally {
     loading.value = false
   }

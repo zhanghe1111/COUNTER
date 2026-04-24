@@ -4,7 +4,8 @@ uvicorn[standard]
 alembic
 psycopg2-binary
 sqlalchemy
-passlib[bcrypt]
+passlib
+bcrypt==3.2.2
 pydantic
 pydantic-settings
 python-jose[cryptography]

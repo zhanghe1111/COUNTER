@@ -11,10 +11,81 @@ const password = ref('')
 const nickname = ref('')
 const error = ref('')
 const loading = ref(false)
+const passwordStrength = ref('')
+const passwordStrengthClass = ref('')
+
+// 检查密码强度
+const checkPasswordStrength = (pwd: string) => {
+  let strength = 0
+  
+  // 长度检查
+  if (pwd.length >= 6) strength += 1
+  if (pwd.length >= 8) strength += 1
+  
+  // 包含数字
+  if (/\d/.test(pwd)) strength += 1
+  
+  // 包含小写字母
+  if (/[a-z]/.test(pwd)) strength += 1
+  
+  // 包含大写字母
+  if (/[A-Z]/.test(pwd)) strength += 1
+  
+  // 包含特殊字符
+  if (/[!@#$%^&*(),.?":{}|<>]/.test(pwd)) strength += 1
+  
+  // 设置强度等级
+  if (strength < 3) {
+    passwordStrength.value = '弱'
+    passwordStrengthClass.value = 'weak'
+  } else if (strength < 5) {
+    passwordStrength.value = '中'
+    passwordStrengthClass.value = 'medium'
+  } else {
+    passwordStrength.value = '强'
+    passwordStrengthClass.value = 'strong'
+  }
+}
 
 const handleRegister = async () => {
-  if (!username.value || !password.value || !nickname.value) {
-    error.value = '请填写所有字段'
+  // 表单验证
+  if (!username.value) {
+    error.value = '请输入用户名'
+    return
+  }
+  
+  if (!password.value) {
+    error.value = '请输入密码'
+    return
+  }
+  
+  if (!nickname.value) {
+    error.value = '请输入昵称'
+    return
+  }
+  
+  // 用户名格式验证
+  if (username.value.length < 3 || username.value.length > 20) {
+    error.value = '用户名长度应在3-20个字符之间'
+    return
+  }
+  
+  // 昵称格式验证
+  if (nickname.value.length < 2 || nickname.value.length > 20) {
+    error.value = '昵称长度应在2-20个字符之间'
+    return
+  }
+  
+  // 密码格式验证
+  if (password.value.length < 6) {
+    error.value = '密码长度至少为6个字符'
+    return
+  }
+  
+  // 密码长度上限验证（后端bcrypt限制72字节）
+  const passwordBytes = new TextEncoder().encode(password.value)
+  if (passwordBytes.length > 72) {
+    error.value = `密码长度不能超过72字节（当前：${passwordBytes.length}字节）`
     return
   }
   
@@ -25,9 +96,11 @@ const handleRegister = async () => {
     await userStore.register(username.value, password.value, nickname.value)
     // 注册成功后自动登录
     await userStore.login(username.value, password.value)
-    router.push('/')
+    // 检查是否有重定向地址
+    const redirectPath = new URLSearchParams(window.location.search).get('redirect')
+    router.push(redirectPath || '/')
   } catch (e: any) {
-    error.value = e.response?.data?.detail || '注册失败'
+    error.value = e.message || '注册失败'
   } finally {
     loading.value = false
   }
@@ -70,7 +143,12 @@ const handleRegister = async () => {
             type="password" 
             class="input"
             placeholder="请输入密码"
+            @input="checkPasswordStrength(password)"
           />
+          <div v-if="password" class="password-strength">
+            <span class="strength-label">密码强度：</span>
+            <span :class="['strength-indicator', passwordStrengthClass]">{{ passwordStrength }}</span>
+          </div>
         </div>
         
         <div v-if="error" class="error-message">
@@ -148,6 +226,39 @@ const handleRegister = async () => {
   padding: 10px;
   background: rgba(255, 107, 107, 0.1);
   border-radius: var(--radius-md);
+}
+
+.password-strength {
+  margin-top: 8px;
+  font-size: 0.85rem;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.strength-label {
+  color: var(--text-secondary);
+}
+
+.strength-indicator {
+  padding: 2px 8px;
+  border-radius: var(--radius-sm);
+  font-weight: 500;
+}
+
+.strength-indicator.weak {
+  background: rgba(255, 107, 107, 0.2);
+  color: var(--danger-color);
+}
+
+.strength-indicator.medium {
+  background: rgba(255, 193, 7, 0.2);
+  color: #ffc107;
+}
+
+.strength-indicator.strong {
+  background: rgba(78, 204, 163, 0.2);
+  color: var(--success-color);
 }
 
 .register-footer {

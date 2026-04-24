@@ -2,6 +2,7 @@
 import { ref, reactive, onMounted, computed, onUnmounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useUserStore } from '@/stores/user'
+import api from '@/utils/api'
 import VChart from 'vue-echarts'
 import { use } from 'echarts/core'
 import { LineChart } from 'echarts/charts'
@@ -82,23 +83,15 @@ const isRoomCreator = computed(() => {
 const loadRoomInfo = async () => {
   loading.value = true
   try {
-    const roomRes = await fetch(`/api/rooms/${roomCode}`)
-    if (roomRes.ok) {
-      roomInfo.value = await roomRes.json()
-      selectedRoundForChart.value = roomInfo.value.current_round
-    } else {
-      throw new Error('房间不存在')
-    }
+    const roomRes = await api.get(`/rooms/${roomCode}`)
+    roomInfo.value = roomRes.data
+    selectedRoundForChart.value = roomInfo.value.current_round
 
-    const playersRes = await fetch(`/api/players/room/${roomInfo.value.id}`)
-    if (playersRes.ok) {
-      players.value = await playersRes.json()
-    }
+    const playersRes = await api.get(`/players/room/${roomInfo.value.id}`)
+    players.value = playersRes.data
 
-    const scoresRes = await fetch(`/api/scores/room/${roomInfo.value.id}`)
-    if (scoresRes.ok) {
-      scores.value = await scoresRes.json()
-    }
+    const scoresRes = await api.get(`/scores/room/${roomInfo.value.id}`)
+    scores.value = scoresRes.data
 
     await loadConfirmationStatus()
 
@@ -115,11 +108,9 @@ const loadRoomInfo = async () => {
 const loadConfirmationStatus = async () => {
   if (!roomInfo.value) return
   try {
-    const res = await fetch(`/api/confirmations/room/${roomInfo.value.id}/status`)
-    if (res.ok) {
-      confirmationStatus.value = await res.json()
-      updateCurrentPlayerConfirmation()
-    }
+    const res = await api.get(`/confirmations/room/${roomInfo.value.id}/status`)
+    confirmationStatus.value = res.data
+    updateCurrentPlayerConfirmation()
   } catch (e) {
     console.error('Failed to load confirmation status', e)
   }
@@ -141,28 +132,37 @@ const loadChartData = async (round: number | null) => {
   try {
     let url = `/api/charts/room/${roomInfo.value.id}`
     if (round !== null) {
-      url = `/api/charts/room/${roomInfo.value.id}/round/${round}`
+      url = `/charts/room/${roomInfo.value.id}/round/${round}`
+    } else {
+      url = `/charts/room/${roomInfo.value.id}`
     }
-    const res = await fetch(url)
-    if (res.ok) {
-      chartData.value = await res.json()
-    }
+    const res = await api.get(url)
+    chartData.value = res.data
   } catch (e) {
     console.error('Failed to load chart data', e)
   }
 }
 
+let reconnectTimer: any = null;
+let reconnectCount = 0;
+const MAX_RECONNECT = 5;
+
 const initWebSocket = () => {
   if (!roomInfo.value || !userStore.userInfo) return
 
-  const player = players.value.find(p => p.user_id === userStore.userInfo.id)
+  const player = players.value.find(p => p.user_id === userStore.userInfo?.id)
   if (!player) return
 
-  const wsUrl = `ws://localhost:8000/api/ws/${roomInfo.value.id}/${player.id}`
+  const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+  // 生产环境可能没有 8000 端口，这里做简单的环境区分
+  const wsHost = window.location.hostname === 'localhost' ? 'localhost:8000' : window.location.host;
+  const wsUrl = `${wsProtocol}//${wsHost}/api/ws/${roomInfo.value.id}/${player.id}`
+  
   ws.value = new WebSocket(wsUrl)
 
   ws.value.onopen = () => {
     console.log('WebSocket连接成功')
+    reconnectCount = 0; // 重置重连次数
   }
 
   ws.value.onmessage = (event) => {
@@ -190,6 +190,15 @@ const initWebSocket = () => {
 
   ws.value.onclose = () => {
     console.log('WebSocket连接关闭')
+    if (reconnectCount < MAX_RECONNECT) {
+      reconnectCount++
+      console.log(`尝试重新连接... (${reconnectCount}/${MAX_RECONNECT})`)
+      reconnectTimer = setTimeout(() => {
+        initWebSocket()
+      }, 3000)
+    } else {
+      error.value = '实时连接已断开，请刷新页面重试'
+    }
   }
 }
 
@@ -214,32 +223,20 @@ const submitScore = async () => {
       scoreData.details.targets = scoreForm.selectedPlayers
     }
 
-    const res = await fetch('/api/scores', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${userStore.token}`
-      },
-      body: JSON.stringify(scoreData)
-    })
-
-    if (res.ok) {
-      await loadRoomInfo()
-      scoreForm.score = 0
-      scoreForm.selectedPlayers = []
-      if (ws.value && ws.value.readyState === WebSocket.OPEN) {
-        ws.value.send(JSON.stringify({
-          type: 'score_update',
-          score: scoreForm.score,
-          round: currentRound.value
-        }))
-      }
-    } else {
-      const data = await res.json()
-      error.value = data.detail || '提交失败'
+    await api.post('/scores', scoreData)
+    
+    await loadRoomInfo()
+    scoreForm.score = 0
+    scoreForm.selectedPlayers = []
+    if (ws.value && ws.value.readyState === WebSocket.OPEN) {
+      ws.value.send(JSON.stringify({
+        type: 'score_update',
+        score: scoreForm.score,
+        round: currentRound.value
+      }))
     }
-  } catch (e) {
-    error.value = '网络错误'
+  } catch (e: any) {
+    error.value = e.message || '网络错误'
   }
 }
 
@@ -247,34 +244,22 @@ const submitConfirmation = async (confirmed: boolean) => {
   if (!roomInfo.value) return
 
   try {
-    const res = await fetch(`/api/confirmations/room/${roomInfo.value.id}/confirm`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${userStore.token}`
-      },
-      body: JSON.stringify({ confirmed })
-    })
+    const res = await api.post(`/confirmations/room/${roomInfo.value.id}/confirm`, { confirmed })
+    
+    const data = res.data
+    isCurrentPlayerConfirmed.value = confirmed
+    await loadConfirmationStatus()
 
-    if (res.ok) {
-      const data = await res.json()
-      isCurrentPlayerConfirmed.value = confirmed
-      await loadConfirmationStatus()
-
-      if (ws.value && ws.value.readyState === WebSocket.OPEN) {
-        ws.value.send(JSON.stringify({
-          type: 'confirmation_update',
-          is_confirmed: confirmed,
-          all_confirmed: data.all_confirmed,
-          can_advance_round: data.can_advance_round
-        }))
-      }
-    } else {
-      const data = await res.json()
-      error.value = data.detail || '确认失败'
+    if (ws.value && ws.value.readyState === WebSocket.OPEN) {
+      ws.value.send(JSON.stringify({
+        type: 'confirmation_update',
+        is_confirmed: confirmed,
+        all_confirmed: data.all_confirmed,
+        can_advance_round: data.can_advance_round
+      }))
     }
-  } catch (e) {
-    error.value = '网络错误'
+  } catch (e: any) {
+    error.value = e.message || '网络错误'
   }
 }
 
@@ -282,32 +267,22 @@ const advanceToNextRound = async () => {
   if (!roomInfo.value) return
 
   try {
-    const res = await fetch(`/api/confirmations/room/${roomInfo.value.id}/next-round`, {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${userStore.token}`
-      }
-    })
+    const res = await api.post(`/confirmations/room/${roomInfo.value.id}/next-round`)
+    
+    const data = res.data
+    roomInfo.value.current_round = data.new_round
+    selectedRoundForChart.value = data.new_round
+    await loadChartData(selectedRoundForChart.value)
+    await loadConfirmationStatus()
 
-    if (res.ok) {
-      const data = await res.json()
-      roomInfo.value.current_round = data.new_round
-      selectedRoundForChart.value = data.new_round
-      await loadChartData(selectedRoundForChart.value)
-      await loadConfirmationStatus()
-
-      if (ws.value && ws.value.readyState === WebSocket.OPEN) {
-        ws.value.send(JSON.stringify({
-          type: 'round_advanced',
-          new_round: data.new_round
-        }))
-      }
-    } else {
-      const data = await res.json()
-      error.value = data.detail || '进入下一轮失败'
+    if (ws.value && ws.value.readyState === WebSocket.OPEN) {
+      ws.value.send(JSON.stringify({
+        type: 'round_advanced',
+        new_round: data.new_round
+      }))
     }
-  } catch (e) {
-    error.value = '网络错误'
+  } catch (e: any) {
+    error.value = e.message || '网络错误'
   }
 }
 
@@ -315,18 +290,10 @@ const leaveRoom = async () => {
   if (!roomInfo.value) return
 
   try {
-    const res = await fetch(`/api/rooms/${roomCode}/leave`, {
-      method: 'DELETE',
-      headers: {
-        'Authorization': `Bearer ${userStore.token}`
-      }
-    })
-
-    if (res.ok) {
-      router.push('/')
-    }
-  } catch (e) {
-    error.value = '离开失败'
+    await api.delete(`/rooms/${roomCode}/leave`)
+    router.push('/')
+  } catch (e: any) {
+    error.value = e.message || '离开失败'
   }
 }
 
@@ -437,7 +404,9 @@ onMounted(() => {
 })
 
 onUnmounted(() => {
+  if (reconnectTimer) clearTimeout(reconnectTimer)
   if (ws.value) {
+    ws.value.onclose = null // 防止触发重连
     ws.value.close()
   }
 })

@@ -12,8 +12,26 @@ const error = ref('')
 const loading = ref(false)
 
 const handleLogin = async () => {
-  if (!username.value || !password.value) {
-    error.value = '请输入用户名和密码'
+  // 表单验证
+  if (!username.value) {
+    error.value = '请输入用户名'
+    return
+  }
+  
+  if (!password.value) {
+    error.value = '请输入密码'
+    return
+  }
+  
+  // 用户名格式验证
+  if (username.value.length < 3 || username.value.length > 20) {
+    error.value = '用户名长度应在3-20个字符之间'
+    return
+  }
+  
+  // 密码格式验证
+  if (password.value.length < 6) {
+    error.value = '密码长度至少为6个字符'
     return
   }
   
@@ -23,12 +41,14 @@ const handleLogin = async () => {
   try {
     const success = await userStore.login(username.value, password.value)
     if (success) {
-      router.push('/')
+      // 检查是否有重定向地址
+      const redirectPath = new URLSearchParams(window.location.search).get('redirect')
+      router.push(redirectPath || '/')
     } else {
       error.value = '用户名或密码错误'
     }
   } catch (e: any) {
-    error.value = e.response?.data?.detail || '登录失败'
+    error.value = e.message || '登录失败'
   } finally {
     loading.value = false
   }

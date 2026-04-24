@@ -2,6 +2,7 @@
 import { ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useUserStore } from '@/stores/user'
+import api from '@/utils/api'
 
 const router = useRouter()
 const userStore = useUserStore()
@@ -12,10 +13,10 @@ const loading = ref(false)
 const fetchRooms = async () => {
   loading.value = true
   try {
-    const res = await fetch('/api/rooms')
-    rooms.value = await res.json()
-  } catch (e) {
-    console.error(e)
+    const res = await api.get('/rooms')
+    rooms.value = res.data
+  } catch (e: any) {
+    console.error(e.message)
   } finally {
     loading.value = false
   }
@@ -26,7 +27,11 @@ const goToRoom = (roomCode: string) => {
 }
 
 const goToCreateRoom = () => {
-  router.push('/create-room')
+  if (userStore.isLoggedIn) {
+    router.push('/create-room')
+  } else {
+    router.push('/login')
+  }
 }
 
 const goToLogin = () => {
@@ -40,6 +45,26 @@ onMounted(() => {
 
 <template>
   <div class="home">
+    <!-- 导航栏 -->
+    <nav class="navbar">
+      <div class="navbar-content">
+        <div class="navbar-brand">
+          <h2>麻将/桌游算分器</h2>
+        </div>
+        <div class="navbar-actions">
+          <div v-if="userStore.isLoggedIn && userStore.userInfo" class="user-info">
+            <span class="welcome-message">欢迎，{{ userStore.userInfo.nickname }}</span>
+            <button class="btn btn-sm btn-outline" @click="router.push('/profile')">个人中心</button>
+            <button class="btn btn-sm btn-outline" @click="userStore.logout(); router.push('/')">登出</button>
+          </div>
+          <div v-else class="auth-buttons">
+            <button class="btn btn-sm" @click="goToLogin">登录</button>
+            <button class="btn btn-sm btn-primary" @click="router.push('/register')">注册</button>
+          </div>
+        </div>
+      </div>
+    </nav>
+    
     <div class="hero">
       <div class="hero-content">
         <h1 class="title">麻将/桌游算分器</h1>
@@ -48,9 +73,12 @@ onMounted(() => {
           <button class="btn btn-primary btn-lg" @click="goToCreateRoom">
             创建房间
           </button>
-          <button v-if="!userStore.isLoggedIn" class="btn btn-secondary btn-lg" @click="goToLogin">
-            登录
-          </button>
+          <div v-if="!userStore.isLoggedIn" class="login-prompt">
+            <p>登录后可以创建和管理房间</p>
+            <button class="btn btn-secondary btn-lg" @click="goToLogin">
+              立即登录
+            </button>
+          </div>
         </div>
       </div>
       <div class="hero-bg"></div>
@@ -90,6 +118,83 @@ onMounted(() => {
 .home {
   min-height: 100vh;
   background: var(--bg-primary);
+}
+
+.navbar {
+  background: var(--bg-card);
+  border-bottom: 1px solid var(--border-color);
+  padding: 16px 0;
+  position: sticky;
+  top: 0;
+  z-index: 100;
+  box-shadow: var(--shadow-sm);
+}
+
+.navbar-content {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 0 20px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.navbar-brand h2 {
+  font-size: 1.5rem;
+  font-weight: 700;
+  background: linear-gradient(135deg, #fff 0%, var(--accent-color) 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+  margin: 0;
+}
+
+.navbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.user-info {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.welcome-message {
+  color: var(--text-primary);
+  font-size: 0.9rem;
+}
+
+.auth-buttons {
+  display: flex;
+  gap: 8px;
+}
+
+.btn-sm {
+  padding: 6px 16px;
+  font-size: 0.85rem;
+}
+
+.btn-outline {
+  background: transparent;
+  border: 1px solid var(--border-color);
+  color: var(--text-primary);
+}
+
+.btn-outline:hover {
+  border-color: var(--accent-color);
+  color: var(--accent-color);
+}
+
+.login-prompt {
+  text-align: center;
+  margin-top: 16px;
+}
+
+.login-prompt p {
+  color: var(--text-secondary);
+  margin-bottom: 8px;
 }
 
 .hero {
