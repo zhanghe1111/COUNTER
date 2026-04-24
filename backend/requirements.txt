@@ -1,0 +1,12 @@
+# 依赖包
+fastapi
+uvicorn[standard]
+alembic
+psycopg2-binary
+sqlalchemy
+passlib[bcrypt]
+pydantic
+pydantic-settings
+python-jose[cryptography]
+python-multipart
+websockets
