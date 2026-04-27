@@ -1,6 +1,10 @@
 /README.md
 /spec
 /backend/venv
+/frontend/dist
+/frontend/node_modules
+
+/backend/venv
 /backend/.env
 /.pids
 /logs
