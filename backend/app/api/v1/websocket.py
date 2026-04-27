@@ -1,40 +1,45 @@
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Depends
 from sqlalchemy.orm import Session
 import json
-from typing import Dict, List, Optional
+from typing import Dict
 
 from app.db.database import get_db
-from app.db.models import Room, Player
+from app.db.models import Room, Player, EventRecord
 
 router = APIRouter()
 
-# 存储WebSocket连接
+
 class ConnectionManager:
     def __init__(self):
-        # 格式: {room_id: {player_id: websocket}}
         self.active_connections: Dict[int, Dict[int, WebSocket]] = {}
-    
+
     async def connect(self, websocket: WebSocket, room_id: int, player_id: int):
         await websocket.accept()
         if room_id not in self.active_connections:
             self.active_connections[room_id] = {}
         self.active_connections[room_id][player_id] = websocket
-    
+
     def disconnect(self, room_id: int, player_id: int):
         if room_id in self.active_connections:
             if player_id in self.active_connections[room_id]:
                 del self.active_connections[room_id][player_id]
             if not self.active_connections[room_id]:
                 del self.active_connections[room_id]
-    
+
     async def send_personal_message(self, message: str, room_id: int, player_id: int):
         if room_id in self.active_connections and player_id in self.active_connections[room_id]:
             await self.active_connections[room_id][player_id].send_text(message)
-    
+
     async def broadcast(self, message: str, room_id: int):
         if room_id in self.active_connections:
-            for connection in self.active_connections[room_id].values():
-                await connection.send_text(message)
+            disconnected = []
+            for player_id, connection in self.active_connections[room_id].items():
+                try:
+                    await connection.send_text(message)
+                except Exception:
+                    disconnected.append(player_id)
+            for player_id in disconnected:
+                self.disconnect(room_id, player_id)
 
 
 manager = ConnectionManager()
@@ -47,7 +52,6 @@ async def websocket_endpoint(
     player_id: int,
     db: Session = Depends(get_db)
 ):
-    """WebSocket端点"""
     room = db.query(Room).filter(Room.id == room_id).first()
     if not room:
         await websocket.close(code=1000, reason="Room not found")
@@ -76,39 +80,11 @@ async def websocket_endpoint(
             player_id
         )
 
-        await manager.broadcast(
-            json.dumps({
-                "type": "player_joined",
-                "player_id": player.id,
-                "nickname": player.nickname
-            }),
-            room_id
-        )
-
         while True:
             data = await websocket.receive_text()
             message = json.loads(data)
 
-            if message["type"] == "score_update":
-                await manager.broadcast(
-                    json.dumps({
-                        "type": "score_update",
-                        "player_id": player_id,
-                        "score": message["score"],
-                        "round": message["round"]
-                    }),
-                    room_id
-                )
-            elif message["type"] == "status_update":
-                await manager.broadcast(
-                    json.dumps({
-                        "type": "status_update",
-                        "player_id": player_id,
-                        "status": message["status"]
-                    }),
-                    room_id
-                )
-            elif message["type"] == "confirmation_update":
+            if message["type"] == "confirmation_update":
                 await manager.broadcast(
                     json.dumps({
                         "type": "confirmation_update",
@@ -127,23 +103,22 @@ async def websocket_endpoint(
                     }),
                     room_id
                 )
-            elif message["type"] == "chat":
-                await manager.broadcast(
-                    json.dumps({
-                        "type": "chat",
-                        "player_id": player_id,
-                        "nickname": player.nickname,
-                        "message": message["message"]
-                    }),
-                    room_id
-                )
     except WebSocketDisconnect:
         manager.disconnect(room_id, player_id)
+
+        leave_event_data = {
+            "player_id": player_id,
+            "player_nickname": player.nickname
+        }
+        event_record = EventRecord(room_id=room_id, type="player_left", content=leave_event_data)
+        db.add(event_record)
+        db.commit()
+
         await manager.broadcast(
             json.dumps({
-                "type": "player_left",
-                "player_id": player_id,
-                "nickname": player.nickname
+                "type": "room_event",
+                "event_type": "player_left",
+                "data": leave_event_data
             }),
             room_id
         )

@@ -3,34 +3,6 @@ import { ref, reactive, onMounted, computed, onUnmounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useUserStore } from '@/stores/user'
 import api from '@/utils/api'
-import VChart from 'vue-echarts'
-import { use } from 'echarts/core'
-import { LineChart } from 'echarts/charts'
-import {
-  TitleComponent,
-  TooltipComponent,
-  LegendComponent,
-  GridComponent,
-  DatasetComponent,
-  TransformComponent,
-  DataZoomComponent
-} from 'echarts/components'
-import { LabelLayout, UniversalTransition } from 'echarts/features'
-import { CanvasRenderer } from 'echarts/renderers'
-
-use([
-  LineChart,
-  TitleComponent,
-  TooltipComponent,
-  LegendComponent,
-  GridComponent,
-  DatasetComponent,
-  TransformComponent,
-  DataZoomComponent,
-  LabelLayout,
-  UniversalTransition,
-  CanvasRenderer
-])
 
 const route = useRoute()
 const router = useRouter()
@@ -40,7 +12,6 @@ const roomCode = route.params.roomCode as string
 const roomInfo = ref<any>(null)
 const players = ref<any[]>([])
 const scores = ref<any[]>([])
-const chartData = ref<any>(null)
 const loading = ref(false)
 const error = ref('')
 
@@ -53,9 +24,227 @@ const scoreForm = reactive({
   selectedPlayers: [] as number[]
 })
 
-const selectedRoundForChart = ref<number | null>(null)
-
 const ws = ref<WebSocket | null>(null)
+
+const events = ref<any[]>([])
+
+const filteredEvents = computed(() => {
+  if (isPlayingState.value) {
+    return events.value.filter(e => e.type !== 'player_joined' && e.type !== 'player_left')
+  }
+  return events.value
+})
+const pendingNotifications = ref<any[]>([])
+
+const isPendingScoreEvent = (event: any) => {
+  if (event.type !== 'score_collected') return false
+  const current = currentPlayer.value
+  if (!current) return false
+  const batchId = event.content.batch_id
+  return pendingNotifications.value.some(n => n.batch_id === batch_id && n.target_player_id === current.id)
+}
+
+const roomStatus = ref<any>(null)
+const isWaitingState = computed(() => roomInfo.value?.status === 'open')
+const isPlayingState = computed(() => roomInfo.value?.status === 'playing')
+const allPlayersReady = computed(() => {
+  const activeP = players.value.filter(p => p.status === 'active')
+  return activeP.length >= 2 && activeP.every(p => p.is_ready)
+})
+const endGameVotes = ref<any[]>([])
+const isEndGameProposed = computed(() => endGameVotes.value.length > 0)
+const hasCurrentVotedEnd = computed(() => {
+  if (!currentPlayer.value) return false
+  return endGameVotes.value.some(v => v.player_id === currentPlayer.value?.id && v.is_approved)
+})
+const allApprovedEnd = computed(() => {
+  if (!isEndGameProposed.value) return false
+  return endGameVotes.value.every(v => v.is_approved)
+})
+const leaveRequests = ref<any[]>([])
+const currentLeaveRequest = computed(() => {
+  if (!currentPlayer.value) return null
+  return leaveRequests.value.find(lr => lr.player_id === currentPlayer.value?.id)
+})
+
+const fetchRoomStatus = async () => {
+  if (!roomInfo.value) return
+  try {
+    const res = await api.get(`/rooms/${roomCode}/status`)
+    roomStatus.value = res.data
+    for (const sp of res.data.players) {
+      const localP = players.value.find(p => p.id === sp.id)
+      if (localP) localP.is_ready = sp.is_ready
+    }
+    if (res.data.end_game_proposal?.is_active) {
+      endGameVotes.value = res.data.end_game_proposal.votes
+    } else {
+      endGameVotes.value = []
+    }
+    leaveRequests.value = res.data.leave_requests || []
+  } catch (e) {
+    console.error('Failed to fetch room status', e)
+  }
+}
+
+const toggleReady = async () => {
+  try {
+    await api.post(`/rooms/${roomCode}/ready`)
+  } catch (e: any) {
+    error.value = e.response?.data?.detail || '操作失败'
+  }
+}
+
+const startGame = async () => {
+  try {
+    await api.post(`/rooms/${roomCode}/start`)
+  } catch (e: any) {
+    error.value = e.response?.data?.detail || '开始失败'
+  }
+}
+
+const proposeEndGame = async () => {
+  try {
+    await api.post(`/rooms/${roomCode}/propose-end`)
+  } catch (e: any) {
+    error.value = e.response?.data?.detail || '操作失败'
+  }
+}
+
+const voteEndGame = async () => {
+  try {
+    const res = await api.post(`/rooms/${roomCode}/vote-end`)
+    if (res.data.game_reset) {
+      await refreshRoomData()
+    }
+  } catch (e: any) {
+    error.value = e.response?.data?.detail || '操作失败'
+  }
+}
+
+const requestLeaveRoom = async () => {
+  try {
+    await api.post(`/rooms/${roomCode}/request-leave`)
+  } catch (e: any) {
+    error.value = e.response?.data?.detail || '操作失败'
+  }
+}
+
+const approveLeave = async (requestId: number) => {
+  try {
+    await api.post(`/rooms/${roomCode}/approve-leave/${requestId}`)
+    await refreshRoomData()
+  } catch (e: any) {
+    error.value = e.response?.data?.detail || '操作失败'
+  }
+}
+
+const rejectLeave = async (requestId: number) => {
+  try {
+    await api.post(`/rooms/${roomCode}/reject-leave/${requestId}`)
+    leaveRequests.value = leaveRequests.value.filter(lr => lr.id !== requestId)
+  } catch (e: any) {
+    error.value = e.response?.data?.detail || '操作失败'
+  }
+}
+
+const fetchEvents = async () => {
+  if (!roomInfo.value) return
+  try {
+    const res = await api.get(`/events/room/${roomInfo.value.id}?limit=100`)
+    events.value = res.data
+  } catch (e) {
+    console.error('Failed to fetch events', e)
+  }
+}
+
+const fetchPendingNotifications = async () => {
+  if (!roomInfo.value || !currentPlayer.value) return
+  try {
+    const res = await api.get(`/pending-scores/room/${roomInfo.value.id}/player/${currentPlayer.value.id}`)
+    pendingNotifications.value = res.data
+  } catch (e) {
+    console.error('Failed to fetch pending notifications', e)
+  }
+}
+
+const acceptPendingScore = async (pendingId: number) => {
+  try {
+    await api.post(`/pending-scores/${pendingId}/accept`)
+    pendingNotifications.value = pendingNotifications.value.filter(n => n.id !== pendingId)
+  } catch (e: any) {
+    console.error('Failed to accept pending score', e)
+  }
+}
+
+const rejectPendingScore = async (pendingId: number) => {
+  try {
+    await api.post(`/pending-scores/${pendingId}/reject`)
+    await refreshRoomData()
+    pendingNotifications.value = pendingNotifications.value.filter(n => n.id !== pendingId)
+  } catch (e: any) {
+    console.error('Failed to reject pending score', e)
+  }
+}
+
+const getEventText = (event: any) => {
+  const c = event.content
+  switch (event.type) {
+    case 'player_joined':
+      return `${c.player_nickname} 进入了房间`
+    case 'player_left':
+      return `${c.player_nickname} 离开了房间`
+    case 'score_collected':
+      const targetNames = c.targets?.map((t: any) => t.nickname).join('、') || ''
+      return `${c.source_nickname} 向 ${targetNames} 收取了 ${c.score} 分`
+    case 'score_accepted':
+      return `${c.target_nickname} 确认了 ${c.source_nickname} 收取的 ${c.score} 分`
+    case 'score_rejected':
+      const rejectedTargets = c.targets?.map((t: any) => t.nickname).join('、') || ''
+      return `${c.rejector_nickname} 拒绝了 ${c.source_nickname} 收取的 ${c.score} 分（影响: ${rejectedTargets}），分数已撤销`
+    case 'round_confirmed':
+      return `${c.player_nickname} 确认了第 ${c.round} 轮`
+    case 'round_advanced':
+      return `游戏进入第 ${c.new_round} 轮`
+    case 'game_started':
+      return `游戏开始了！`
+    case 'game_reset':
+      return `游戏已重置`
+    case 'end_proposed':
+      return `${c.player_nickname} 提议结束游戏`
+    case 'end_voted':
+      return `${c.player_nickname} 投票结束游戏`
+    case 'leave_requested':
+      return `${c.player_nickname} 请求退出`
+    case 'leave_approved':
+      return `${c.player_nickname} 的退出请求已批准`
+    case 'leave_rejected':
+      return `${c.player_nickname} 的退出请求被拒绝`
+    default:
+      return JSON.stringify(c)
+  }
+}
+
+const getEventClass = (type: string) => {
+  switch (type) {
+    case 'player_joined': return 'event-join'
+    case 'player_left': return 'event-leave'
+    case 'score_collected': return 'event-score'
+    case 'score_accepted': return 'event-accept'
+    case 'score_rejected': return 'event-reject'
+    case 'round_confirmed': return 'event-confirm'
+    case 'round_advanced': return 'event-advance'
+    case 'game_started': return 'event-start'
+    case 'game_reset': return 'event-reset'
+    case 'end_proposed': return 'event-end-propose'
+    case 'end_voted': return 'event-end-vote'
+    case 'leave_requested': return 'event-leave-request'
+    case 'leave_approved': return 'event-leave-approve'
+    case 'leave_rejected': return 'event-leave-reject'
+    default: return ''
+  }
+}
+
 const currentPlayer = computed(() => {
   return players.value.find(p => p.user_id === userStore.userInfo?.id)
 })
@@ -64,12 +253,8 @@ const currentRound = computed(() => {
   return roomInfo.value?.current_round || 1
 })
 
-const playerRanking = computed(() => {
-  return [...players.value].sort((a, b) => b.current_score - a.current_score)
-})
-
 const activePlayers = computed(() => {
-  return players.value.filter(p => p.status === 'active')
+  return players.value.filter(p => p.status === 'active' && p.id !== currentPlayer.value?.id)
 })
 
 const allActivePlayersConfirmed = computed(() => {
@@ -85,7 +270,6 @@ const loadRoomInfo = async () => {
   try {
     const roomRes = await api.get(`/rooms/${roomCode}`)
     roomInfo.value = roomRes.data
-    selectedRoundForChart.value = roomInfo.value.current_round
 
     const playersRes = await api.get(`/players/room/${roomInfo.value.id}`)
     players.value = playersRes.data
@@ -95,13 +279,35 @@ const loadRoomInfo = async () => {
 
     await loadConfirmationStatus()
 
-    await loadChartData(selectedRoundForChart.value)
-
-    initWebSocket()
+    await fetchEvents()
+    await fetchPendingNotifications()
+    await fetchRoomStatus()
   } catch (e: any) {
     error.value = e.message || '加载失败'
   } finally {
     loading.value = false
+  }
+}
+
+const refreshRoomData = async () => {
+  if (!roomInfo.value) return
+  error.value = ''
+  try {
+    const roomRes = await api.get(`/rooms/${roomCode}`)
+    roomInfo.value = roomRes.data
+
+    const playersRes = await api.get(`/players/room/${roomInfo.value.id}`)
+    players.value = playersRes.data
+
+    const scoresRes = await api.get(`/scores/room/${roomInfo.value.id}`)
+    scores.value = scoresRes.data
+
+    await loadConfirmationStatus()
+    await fetchEvents()
+    await fetchPendingNotifications()
+    await fetchRoomStatus()
+  } catch (e: any) {
+    console.error('刷新数据失败', e)
   }
 }
 
@@ -125,22 +331,6 @@ const updateCurrentPlayerConfirmation = () => {
     (p: any) => p.player_id === currentPlayer.value?.id
   )
   isCurrentPlayerConfirmed.value = playerStatus?.is_confirmed || false
-}
-
-const loadChartData = async (round: number | null) => {
-  if (!roomInfo.value) return
-  try {
-    let url = `/api/charts/room/${roomInfo.value.id}`
-    if (round !== null) {
-      url = `/charts/room/${roomInfo.value.id}/round/${round}`
-    } else {
-      url = `/charts/room/${roomInfo.value.id}`
-    }
-    const res = await api.get(url)
-    chartData.value = res.data
-  } catch (e) {
-    console.error('Failed to load chart data', e)
-  }
 }
 
 let reconnectTimer: any = null;
@@ -169,21 +359,37 @@ const initWebSocket = () => {
     const message = JSON.parse(event.data)
     console.log('收到消息:', message)
 
-    if (message.type === 'player_joined' || message.type === 'player_left') {
-      loadRoomInfo()
-    } else if (message.type === 'score_update' || message.type === 'status_update') {
-      loadRoomInfo()
+    if (message.type === 'room_event') {
+      error.value = ''
+      if (message.event_type === 'score_rejected') {
+        refreshRoomData()
+      } else if (message.event_type === 'score_accepted') {
+        fetchPendingNotifications()
+      } else if (['ready_update', 'player_joined', 'player_left', 'game_reset'].includes(message.event_type)) {
+        refreshRoomData()
+      } else if (message.event_type === 'game_started') {
+        refreshRoomData()
+      } else if (message.event_type === 'end_proposed') {
+        fetchRoomStatus()
+      } else if (message.event_type === 'end_voted') {
+        fetchRoomStatus()
+      } else if (message.event_type === 'leave_requested') {
+        fetchRoomStatus()
+      } else if (message.event_type === 'leave_approved') {
+        refreshRoomData()
+      } else if (message.event_type === 'leave_rejected') {
+        fetchRoomStatus()
+      } else {
+        refreshRoomData()
+      }
     } else if (message.type === 'confirmation_update') {
       loadConfirmationStatus()
       if (message.round_advanced) {
         roomInfo.value.current_round = message.new_round
-        selectedRoundForChart.value = message.new_round
-        loadChartData(selectedRoundForChart.value)
+        loadConfirmationStatus()
       }
     } else if (message.type === 'round_advanced') {
       roomInfo.value.current_round = message.new_round
-      selectedRoundForChart.value = message.new_round
-      loadChartData(selectedRoundForChart.value)
       loadConfirmationStatus()
     }
   }
@@ -224,19 +430,21 @@ const submitScore = async () => {
     }
 
     await api.post('/scores', scoreData)
-    
-    await loadRoomInfo()
+
+    await refreshRoomData()
     scoreForm.score = 0
     scoreForm.selectedPlayers = []
-    if (ws.value && ws.value.readyState === WebSocket.OPEN) {
-      ws.value.send(JSON.stringify({
-        type: 'score_update',
-        score: scoreForm.score,
-        round: currentRound.value
-      }))
-    }
   } catch (e: any) {
     error.value = e.message || '网络错误'
+  }
+}
+
+const togglePlayer = (playerId: number) => {
+  const idx = scoreForm.selectedPlayers.indexOf(playerId)
+  if (idx === -1) {
+    scoreForm.selectedPlayers.push(playerId)
+  } else {
+    scoreForm.selectedPlayers.splice(idx, 1)
   }
 }
 
@@ -271,8 +479,6 @@ const advanceToNextRound = async () => {
     
     const data = res.data
     roomInfo.value.current_round = data.new_round
-    selectedRoundForChart.value = data.new_round
-    await loadChartData(selectedRoundForChart.value)
     await loadConfirmationStatus()
 
     if (ws.value && ws.value.readyState === WebSocket.OPEN) {
@@ -297,110 +503,13 @@ const leaveRoom = async () => {
   }
 }
 
-const onRoundChange = async () => {
-  await loadChartData(selectedRoundForChart.value)
-}
-
-const chartOption = computed(() => {
-  if (!chartData.value) return {}
-
-  return {
-    title: {
-      text: selectedRoundForChart.value
-        ? `第 ${selectedRoundForChart.value} 轮分数曲线`
-        : '分数变化曲线',
-      textStyle: {
-        color: '#fff'
-      }
-    },
-    tooltip: {
-      trigger: 'axis'
-    },
-    legend: {
-      data: chartData.value.players?.map((p: any) => p.name) || [],
-      textStyle: {
-        color: '#fff'
-      }
-    },
-    grid: {
-      left: '3%',
-      right: '4%',
-      bottom: '15%',
-      containLabel: true
-    },
-    dataZoom: [
-      {
-        type: 'inside',
-        start: 0,
-        end: 100
-      },
-      {
-        type: 'slider',
-        start: 0,
-        end: 100,
-        textStyle: {
-          color: '#fff'
-        }
-      }
-    ],
-    xAxis: {
-      type: 'category',
-      boundaryGap: false,
-      data: chartData.value.rounds || [],
-      axisLabel: {
-        color: '#fff'
-      },
-      axisLine: {
-        lineStyle: {
-          color: '#4a5568'
-        }
-      }
-    },
-    yAxis: {
-      type: 'value',
-      axisLabel: {
-        color: '#fff'
-      },
-      axisLine: {
-        lineStyle: {
-          color: '#4a5568'
-        }
-      },
-      splitLine: {
-        lineStyle: {
-          color: '#2d3748'
-        }
-      }
-    },
-    series: (chartData.value.players || []).map((player: any, index: number) => {
-      const colors = ['#e94560', '#4ecca3', '#00d9ff', '#ffc107', '#ff6b6b']
-      return {
-        name: player.name,
-        type: 'line',
-        areaStyle: {
-          opacity: 0.2
-        },
-        emphasis: {
-          focus: 'series'
-        },
-        lineStyle: {
-          width: 3
-        },
-        itemStyle: {
-          color: colors[index % colors.length]
-        },
-        data: player.scores || player.score_changes || []
-      }
-    })
-  }
-})
-
-onMounted(() => {
+onMounted(async () => {
   if (!userStore.isLoggedIn) {
     router.push('/login')
     return
   }
-  loadRoomInfo()
+  await loadRoomInfo()
+  initWebSocket()
 })
 
 onUnmounted(() => {
@@ -425,19 +534,90 @@ onUnmounted(() => {
             <span class="game-type" :class="roomInfo.game_type">
               {{ roomInfo.game_type === 'add_subtract' ? '加减分' : '加分' }}
             </span>
-            <span class="round">当前轮次: {{ currentRound }}</span>
+            <span class="round" :class="{ playing: isPlayingState }">
+              {{ isWaitingState ? '等待开始' : `第 ${currentRound} 轮` }}
+            </span>
+            <span class="room-status-tag" :class="roomInfo.status">
+              {{ isPlayingState ? '游戏中' : '等待中' }}
+            </span>
             <span v-if="roomInfo.base_score !== 0" class="base-score">
               基础分: {{ roomInfo.base_score }}
             </span>
           </div>
         </div>
-        <button class="btn btn-secondary" @click="leaveRoom">
-          离开房间
-        </button>
+        <div class="room-actions">
+          <button v-if="!isPlayingState" class="btn btn-secondary" @click="leaveRoom">
+            离开房间
+          </button>
+          <button v-else class="btn btn-secondary" @click="requestLeaveRoom" :disabled="!!currentLeaveRequest">
+            {{ currentLeaveRequest ? '已申请退出' : '申请退出' }}
+          </button>
+        </div>
       </div>
 
       <div class="room-main">
         <div class="left-section">
+          <div v-if="isWaitingState" class="score-input-section">
+            <h2>游戏准备</h2>
+            <div class="ready-actions">
+              <button
+                class="btn btn-primary w-full"
+                :class="{ ready: currentPlayer?.is_ready }"
+                @click="toggleReady"
+              >
+                {{ currentPlayer?.is_ready ? '✓ 已准备' : '点击准备' }}
+              </button>
+              <button
+                v-if="isRoomCreator"
+                class="btn btn-success w-full btn-lg"
+                :disabled="!allPlayersReady"
+                @click="startGame"
+              >
+                开始游戏{{ allPlayersReady ? '' : ' (等待所有人准备)' }}
+              </button>
+            </div>
+          </div>
+
+          <div v-if="isPlayingState" class="score-input-section">
+            <h2>分数输入 - 第 {{ currentRound }} 轮</h2>
+            <div class="score-form">
+              <div class="form-group">
+                <label>{{ roomInfo.game_type === 'add_subtract' ? '分数（赢家获得）' : '分数' }}</label>
+                <input
+                  v-model.number="scoreForm.score"
+                  type="number"
+                  class="input"
+                  placeholder="输入分数"
+                />
+              </div>
+
+              <div v-if="roomInfo.game_type === 'add_subtract'" class="form-group">
+                <label>选择输家（点击选择，再次点击取消，每个输家扣除相同分数）</label>
+                <div class="target-buttons">
+                  <button
+                    v-for="player in activePlayers"
+                    :key="player.id"
+                    class="target-btn"
+                    :class="{ selected: scoreForm.selectedPlayers.includes(player.id) }"
+                    @click="togglePlayer(player.id)"
+                  >
+                    {{ player.nickname }}
+                    <span class="target-score" v-if="scoreForm.score > 0 && scoreForm.selectedPlayers.includes(player.id)">
+                      -{{ scoreForm.score }}
+                    </span>
+                  </button>
+                </div>
+                <p class="helper-text" v-if="scoreForm.selectedPlayers.length > 0 && scoreForm.score > 0">
+                  已选 {{ scoreForm.selectedPlayers.length }} 人，每个输家将扣除 {{ scoreForm.score }} 分，你将获得 {{ scoreForm.score * scoreForm.selectedPlayers.length }} 分
+                </p>
+              </div>
+
+              <button class="btn btn-primary w-full" @click="submitScore">
+                提交分数
+              </button>
+            </div>
+          </div>
+
           <div class="players-section">
             <h2>玩家列表</h2>
             <div class="players-list">
@@ -454,56 +634,22 @@ onUnmounted(() => {
                     <span v-if="roomInfo.created_by === player.user_id" class="host-tag">房主</span>
                   </div>
                   <div class="player-status">
-                    <span :class="player.status">
+                    <span v-if="isWaitingState && player.is_ready" class="ready-tag">✓ 已准备</span>
+                    <span v-else-if="isWaitingState && !player.is_ready" class="not-ready-tag">未准备</span>
+                    <span v-else :class="player.status">
                       {{ player.status === 'active' ? '活跃' : player.status === 'eliminated' ? '淘汰' : '胜利' }}
                     </span>
-                    <span v-if="confirmationStatus?.players?.find((p: any) => p.player_id === player.id)?.is_confirmed" class="confirmed-tag">
+                    <span v-if="!isWaitingState && confirmationStatus?.players?.find((p: any) => p.player_id === player.id)?.is_confirmed" class="confirmed-tag">
                       ✓ 已确认
                     </span>
                   </div>
                 </div>
-                <div class="player-score">{{ player.current_score }}</div>
+                <div class="player-score">{{ isWaitingState ? '-' : player.current_score }}</div>
               </div>
             </div>
           </div>
 
-          <div class="score-input-section">
-            <h2>分数输入 - 第 {{ currentRound }} 轮</h2>
-            <div class="score-form">
-              <div class="form-group">
-                <label>{{ roomInfo.game_type === 'add_subtract' ? '分数（赢家获得）' : '分数' }}</label>
-                <input
-                  v-model.number="scoreForm.score"
-                  type="number"
-                  class="input"
-                  placeholder="输入分数"
-                />
-              </div>
-
-              <div v-if="roomInfo.game_type === 'add_subtract'" class="form-group">
-                <label>选择输家（每个输家都需要交出相同分数）</label>
-                <div class="checkbox-group">
-                  <label v-for="player in activePlayers" :key="player.id" class="checkbox-item">
-                    <input
-                      type="checkbox"
-                      :value="player.id"
-                      v-model="scoreForm.selectedPlayers"
-                    />
-                    {{ player.nickname }}
-                  </label>
-                </div>
-                <p class="helper-text" v-if="scoreForm.selectedPlayers.length > 0 && scoreForm.score > 0">
-                  每个输家将扣除 {{ scoreForm.score }} 分
-                </p>
-              </div>
-
-              <button class="btn btn-primary w-full" @click="submitScore">
-                提交分数
-              </button>
-            </div>
-          </div>
-
-          <div class="confirmation-section">
+          <div v-if="isPlayingState" class="confirmation-section">
             <h2>确认状态</h2>
             <div class="confirmation-info">
               <div class="confirmation-status">
@@ -539,51 +685,121 @@ onUnmounted(() => {
               </div>
             </div>
           </div>
-        </div>
 
-        <div class="right-section">
-          <div class="ranking-section">
-            <h2>排行榜</h2>
-            <div class="ranking-list">
-              <div
-                v-for="(player, index) in playerRanking"
-                :key="player.id"
-                class="ranking-item"
-                :class="player.status"
-              >
-                <div class="rank">{{ index + 1 }}</div>
-                <div class="player-info">
-                  <div class="player-nickname">{{ player.nickname }}</div>
-                  <div class="player-status">
-                    <span :class="player.status">
-                      {{ player.status === 'active' ? '活跃' : player.status === 'eliminated' ? '淘汰' : '胜利' }}
-                    </span>
-                  </div>
-                </div>
-                <div class="player-score">{{ player.current_score }}</div>
+          <div v-if="isPlayingState && isRoomCreator" class="confirmation-section">
+            <div class="confirmation-info">
+              <div class="confirmation-status">
+                <span v-if="isEndGameProposed" class="waiting-confirm">
+                  已发起结束对局投票 ({{ endGameVotes.filter(v => v.is_approved).length }}/{{ endGameVotes.length }})
+                </span>
+              </div>
+              <div class="confirmation-buttons">
+                <button
+                  v-if="!isEndGameProposed"
+                  class="btn btn-warning w-full"
+                  @click="proposeEndGame"
+                >
+                  结束对局
+                </button>
               </div>
             </div>
           </div>
 
-          <div class="chart-section">
-            <h2>分数曲线</h2>
-            <div class="round-selector">
-              <label>选择轮次:</label>
-              <select v-model="selectedRoundForChart" @change="onRoundChange" class="input">
-                <option :value="null">全部轮次</option>
-                <option v-for="r in roomInfo.current_round" :key="r" :value="r">
-                  第 {{ r }} 轮
-                </option>
-              </select>
-            </div>
-            <div class="chart-container">
-              <v-chart
-                class="chart"
-                :option="chartOption"
-              />
+          <div v-if="isPlayingState && !isRoomCreator && currentPlayer" class="confirmation-section">
+            <div class="confirmation-info">
+              <div class="confirmation-status">
+                <span v-if="isEndGameProposed && !hasCurrentVotedEnd" class="waiting-confirm">
+                  房主发起了结束对局投票，请投票
+                </span>
+                <span v-else-if="hasCurrentVotedEnd" class="all-confirmed">
+                  你已同意结束对局
+                </span>
+              </div>
+              <div class="confirmation-buttons">
+                <button
+                  v-if="!currentLeaveRequest"
+                  class="btn btn-secondary w-full"
+                  @click="requestLeaveRoom"
+                >
+                  申请退出对局
+                </button>
+                <button
+                  v-if="isEndGameProposed && !hasCurrentVotedEnd"
+                  class="btn btn-success w-full"
+                  @click="voteEndGame"
+                >
+                  同意结束
+                </button>
+              </div>
             </div>
           </div>
         </div>
+
+        <div class="center-section">
+          <div v-if="isPlayingState && isRoomCreator && leaveRequests.length > 0" class="notification-panel" style="border-color: var(--info-color);">
+            <h3 style="color: var(--info-color);">
+              退出申请
+              <span class="notification-count">({{ leaveRequests.length }})</span>
+            </h3>
+            <div v-for="lr in leaveRequests" :key="lr.id" class="notification-item">
+              <div class="notification-info">
+                <strong>{{ lr.player_nickname }}</strong> 申请退出对局
+              </div>
+              <div class="notification-actions">
+                <button class="btn btn-success btn-sm" @click="approveLeave(lr.id)">
+                  同意
+                </button>
+                <button class="btn btn-danger btn-sm" @click="rejectLeave(lr.id)">
+                  拒绝
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <div class="activity-section">
+            <h2>房间动态</h2>
+            <div class="activity-feed">
+              <div v-if="filteredEvents.length === 0" class="activity-empty">
+                暂无动态
+              </div>
+              <div
+                v-for="event in filteredEvents"
+                :key="event.id"
+                class="activity-item"
+                :class="getEventClass(event.type)"
+              >
+                <div class="activity-icon">
+                  <span v-if="event.type === 'player_joined'">➡️</span>
+                  <span v-else-if="event.type === 'player_left'">⬅️</span>
+                  <span v-else-if="event.type === 'score_collected'">💰</span>
+                  <span v-else-if="event.type === 'score_accepted'">✅</span>
+                  <span v-else-if="event.type === 'score_rejected'">⛔</span>
+                  <span v-else-if="event.type === 'round_confirmed'">✔️</span>
+                  <span v-else-if="event.type === 'round_advanced'">▶️</span>
+                  <span v-else>●</span>
+                </div>
+                <div class="activity-content">
+                  <div class="activity-text">{{ getEventText(event) }}</div>
+                  <div v-if="isPendingScoreEvent(event)" class="activity-actions">
+                    <button
+                      class="btn btn-success btn-sm"
+                      @click="acceptPendingScore(pendingNotifications.find(n => n.batch_id === event.content.batch_id)?.id)"
+                    >
+                      接受
+                    </button>
+                    <button
+                      class="btn btn-danger btn-sm"
+                      @click="rejectPendingScore(pendingNotifications.find(n => n.batch_id === event.content.batch_id)?.id)"
+                    >
+                      拒绝
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
       </div>
     </div>
   </div>
@@ -623,6 +839,68 @@ onUnmounted(() => {
   box-shadow: var(--shadow-md);
 }
 
+.room-actions {
+  display: flex;
+  gap: 10px;
+  flex-shrink: 0;
+}
+
+.room-status-tag {
+  padding: 4px 12px;
+  border-radius: var(--radius-sm);
+  font-size: 0.85rem;
+  font-weight: 500;
+}
+
+.room-status-tag.open {
+  background: rgba(78, 204, 163, 0.2);
+  color: var(--success-color);
+}
+
+.room-status-tag.playing {
+  background: rgba(233, 69, 96, 0.2);
+  color: var(--accent-color);
+}
+
+.ready-tag {
+  color: var(--success-color);
+  font-weight: 600;
+}
+
+.not-ready-tag {
+  color: var(--text-secondary);
+}
+
+.ready-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.ready-actions .btn.ready {
+  background: var(--success-color);
+}
+
+.ready-actions .btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.btn:disabled:hover {
+  transform: none;
+}
+
+.btn-secondary {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  color: var(--text-primary);
+}
+
 .room-info h1 {
   font-size: 1.8rem;
   margin-bottom: 10px;
@@ -660,6 +938,11 @@ onUnmounted(() => {
   color: var(--warning-color);
 }
 
+.round.playing {
+  background: rgba(233, 69, 96, 0.2);
+  color: var(--accent-color);
+}
+
 .base-score {
   background: rgba(78, 204, 163, 0.2);
   color: var(--success-color);
@@ -669,15 +952,16 @@ onUnmounted(() => {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 20px;
+  align-items: start;
 }
 
-.left-section, .right-section {
+.left-section, .center-section {
   display: flex;
   flex-direction: column;
   gap: 20px;
 }
 
-.players-section, .score-input-section, .ranking-section, .chart-section, .confirmation-section {
+.players-section, .score-input-section, .confirmation-section, .activity-section {
   background: var(--bg-card);
   border: 1px solid var(--border-color);
   border-radius: var(--radius-lg);
@@ -685,7 +969,7 @@ onUnmounted(() => {
   box-shadow: var(--shadow-md);
 }
 
-.players-section h2, .score-input-section h2, .ranking-section h2, .chart-section h2, .confirmation-section h2 {
+.players-section h2, .score-input-section h2, .confirmation-section h2, .activity-section h2 {
   font-size: 1.2rem;
   margin-bottom: 15px;
   color: var(--text-primary);
@@ -817,88 +1101,43 @@ onUnmounted(() => {
   font-style: italic;
 }
 
-.checkbox-group {
+.target-buttons {
   display: flex;
-  flex-direction: column;
+  flex-wrap: wrap;
   gap: 8px;
 }
 
-.checkbox-item {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  cursor: pointer;
-}
-
-.checkbox-item input[type="checkbox"] {
-  width: 16px;
-  height: 16px;
-  accent-color: var(--accent-color);
-}
-
-.ranking-list {
+.target-btn {
   display: flex;
   flex-direction: column;
-  gap: 10px;
-  max-height: 300px;
-  overflow-y: auto;
-}
-
-.ranking-item {
-  display: flex;
   align-items: center;
-  padding: 12px;
+  gap: 4px;
+  padding: 12px 20px;
   background: var(--bg-secondary);
-  border: 1px solid var(--border-color);
+  border: 2px solid var(--border-color);
   border-radius: var(--radius-md);
+  color: var(--text-primary);
+  font-size: 0.95rem;
+  cursor: pointer;
+  transition: all var(--transition-normal);
+  min-width: 80px;
 }
 
-.ranking-item.eliminated {
-  opacity: 0.6;
+.target-btn:hover {
+  border-color: var(--accent-color);
+  transform: translateY(-2px);
 }
 
-.ranking-item.won {
-  background: rgba(255, 193, 7, 0.1);
+.target-btn.selected {
+  border-color: var(--accent-color);
+  background: rgba(233, 69, 96, 0.15);
+  box-shadow: 0 0 12px rgba(233, 69, 96, 0.3);
 }
 
-.rank {
-  width: 30px;
-  font-size: 1.2rem;
-  font-weight: 700;
+.target-score {
+  font-size: 0.8rem;
   color: var(--accent-color);
-  text-align: center;
-  margin-right: 15px;
-}
-
-.ranking-item .player-info {
-  flex: 1;
-}
-
-.round-selector {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  margin-bottom: 15px;
-}
-
-.round-selector label {
-  font-size: 0.9rem;
-  color: var(--text-secondary);
-}
-
-.round-selector select {
-  flex: 1;
-  max-width: 200px;
-}
-
-.chart-container {
-  height: 350px;
-  width: 100%;
-}
-
-.chart {
-  width: 100%;
-  height: 100%;
+  font-weight: 600;
 }
 
 .confirmation-section {
@@ -935,8 +1174,183 @@ onUnmounted(() => {
   font-size: 1rem;
 }
 
-.btn-success {
-  background: var(--success-color);
+.notification-panel {
+  background: var(--bg-card);
+  border: 2px solid var(--warning-color);
+  border-radius: var(--radius-lg);
+  padding: 16px 20px;
+  margin-bottom: 20px;
+  box-shadow: 0 4px 20px rgba(255, 193, 7, 0.3);
+  animation: slideDown 0.3s ease-out;
+}
+
+.notification-panel h3 {
+  font-size: 1.1rem;
+  margin-bottom: 12px;
+  color: var(--warning-color);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.notification-count {
+  font-size: 0.9rem;
+  color: var(--text-secondary);
+}
+
+.notification-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 12px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  margin-bottom: 8px;
+  transition: all var(--transition-normal);
+}
+
+.notification-item:last-child {
+  margin-bottom: 0;
+}
+
+.notification-item:hover {
+  border-color: var(--warning-color);
+}
+
+.notification-info {
+  flex: 1;
+  font-size: 0.95rem;
+  line-height: 1.5;
+}
+
+.notification-info strong {
+  color: var(--accent-color);
+}
+
+.notification-actions {
+  display: flex;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.activity-feed {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 500px;
+  overflow-y: auto;
+}
+
+.activity-empty {
+  color: var(--text-secondary);
+  text-align: center;
+  padding: 30px;
+  font-size: 0.95rem;
+}
+
+.activity-item {
+  display: flex;
+  gap: 12px;
+  padding: 10px 12px;
+  border-radius: var(--radius-md);
+  transition: background var(--transition-normal);
+  border-left: 3px solid transparent;
+}
+
+.activity-item:hover {
+  background: var(--bg-secondary);
+}
+
+.activity-item.event-join {
+  border-left-color: var(--success-color);
+}
+
+.activity-item.event-leave {
+  border-left-color: var(--text-secondary);
+  opacity: 0.7;
+}
+
+.activity-item.event-score {
+  border-left-color: var(--accent-color);
+  background: rgba(233, 69, 96, 0.05);
+}
+
+.activity-item.event-accept {
+  border-left-color: var(--success-color);
+}
+
+.activity-item.event-reject {
+  border-left-color: var(--danger-color);
+  background: rgba(255, 107, 107, 0.05);
+}
+
+.activity-item.event-confirm {
+  border-left-color: var(--info-color);
+}
+
+.activity-item.event-advance {
+  border-left-color: var(--warning-color);
+  background: rgba(255, 193, 7, 0.05);
+}
+
+.activity-item.event-start {
+  border-left-color: var(--success-color);
+  background: rgba(78, 204, 163, 0.1);
+}
+
+.activity-item.event-reset {
+  border-left-color: var(--warning-color);
+  background: rgba(255, 193, 7, 0.08);
+}
+
+.activity-item.event-end-propose {
+  border-left-color: var(--warning-color);
+}
+
+.activity-item.event-end-vote {
+  border-left-color: var(--success-color);
+}
+
+.activity-item.event-leave-request {
+  border-left-color: var(--info-color);
+}
+
+.activity-item.event-leave-approve {
+  border-left-color: var(--success-color);
+}
+
+.activity-item.event-leave-reject {
+  border-left-color: var(--danger-color);
+}
+
+.activity-icon {
+  font-size: 1.1rem;
+  flex-shrink: 0;
+  width: 24px;
+  text-align: center;
+  line-height: 1.5;
+}
+
+.activity-content {
+  flex: 1;
+  min-width: 0;
+}
+
+.activity-text {
+  font-size: 0.9rem;
+  line-height: 1.5;
+  color: var(--text-primary);
+}
+
+.activity-actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.btn-danger {
+  background: var(--danger-color);
   color: white;
   border: none;
   padding: 10px 20px;
@@ -945,24 +1359,25 @@ onUnmounted(() => {
   transition: all var(--transition-normal);
 }
 
-.btn-success:hover {
-  background: #3da87d;
+.btn-danger:hover {
+  background: #e55555;
   transform: translateY(-2px);
 }
 
-.btn-warning {
-  background: var(--warning-color);
-  color: white;
-  border: none;
-  padding: 10px 20px;
-  border-radius: var(--radius-md);
-  cursor: pointer;
-  transition: all var(--transition-normal);
+.btn-sm {
+  padding: 6px 16px;
+  font-size: 0.85rem;
 }
 
-.btn-warning:hover {
-  background: #d39e00;
-  transform: translateY(-2px);
+@keyframes slideDown {
+  from {
+    opacity: 0;
+    transform: translateY(-20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
 @media (max-width: 768px) {

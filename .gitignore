@@ -1,2 +1,9 @@
 /README.md
 /spec
+/backend/venv
+/backend/.env
+/.pids
+/logs
+/frontend/dist
+/frontend/node_modules
+*.log

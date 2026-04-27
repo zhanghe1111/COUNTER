@@ -22,8 +22,27 @@ const fetchRooms = async () => {
   }
 }
 
-const goToRoom = (roomCode: string) => {
-  router.push(`/room/${roomCode}`)
+const goToRoom = async (roomCode: string) => {
+  try {
+    await api.post(`/rooms/${roomCode}/join`, { password: '' })
+    router.push(`/room/${roomCode}`)
+  } catch (e: any) {
+    if (e.response?.status === 401) {
+      const password = window.prompt('请输入房间密码：')
+      if (password) {
+        try {
+          await api.post(`/rooms/${roomCode}/join`, { password })
+          router.push(`/room/${roomCode}`)
+        } catch (err: any) {
+          alert(err.response?.data?.detail || '加入房间失败')
+        }
+      }
+    } else if (e.response?.status === 400 && e.response?.data?.detail === 'You are already in this room') {
+      router.push(`/room/${roomCode}`)
+    } else {
+      alert(e.response?.data?.detail || '加入房间失败')
+    }
+  }
 }
 
 const goToCreateRoom = () => {

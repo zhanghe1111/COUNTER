@@ -1,11 +1,13 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from typing import List
+import json
 
 from app.db.database import get_db
-from app.db.models import Player, Room, User
+from app.db.models import Player, Room, User, EventRecord
 from app.api.v1.auth import get_current_user
 from app.schemas.confirmation import ConfirmationRequest, RoomConfirmationStatus, ConfirmationStatus
+from app.api.v1.websocket import manager
 
 router = APIRouter()
 
@@ -85,6 +87,41 @@ def submit_confirmation(
 
     db.commit()
 
+    if confirmation.confirmed:
+        event_data = {
+            "player_id": player.id,
+            "player_nickname": player.nickname,
+            "round": room.current_round
+        }
+        event_record = EventRecord(room_id=room_id, type="round_confirmed", content=event_data)
+        db.add(event_record)
+        db.commit()
+
+        import asyncio
+        try:
+            loop = asyncio.get_running_loop()
+            if loop.is_running():
+                asyncio.ensure_future(manager.broadcast(
+                    json.dumps({
+                        "type": "room_event",
+                        "event_type": "round_confirmed",
+                        "data": event_data
+                    }),
+                    room_id
+                ))
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            loop.run_until_complete(manager.broadcast(
+                json.dumps({
+                    "type": "room_event",
+                    "event_type": "round_confirmed",
+                    "data": event_data
+                }),
+                room_id
+            ))
+            loop.close()
+
     players = db.query(Player).filter(Player.room_id == room_id).all()
     all_confirmed = all(
         p.is_confirmed and p.confirmed_round >= room.current_round
@@ -151,6 +188,39 @@ def advance_to_next_round(
 
     db.commit()
     db.refresh(room)
+
+    event_data = {
+        "new_round": room.current_round,
+        "previous_round": room.current_round - 1
+    }
+    event_record = EventRecord(room_id=room_id, type="round_advanced", content=event_data)
+    db.add(event_record)
+    db.commit()
+
+    import asyncio
+    try:
+        loop = asyncio.get_running_loop()
+        if loop.is_running():
+            asyncio.ensure_future(manager.broadcast(
+                json.dumps({
+                    "type": "room_event",
+                    "event_type": "round_advanced",
+                    "data": event_data
+                }),
+                room_id
+            ))
+    except RuntimeError:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        loop.run_until_complete(manager.broadcast(
+            json.dumps({
+                "type": "room_event",
+                "event_type": "round_advanced",
+                "data": event_data
+            }),
+            room_id
+        ))
+        loop.close()
 
     return {
         "message": "Advanced to next round",
