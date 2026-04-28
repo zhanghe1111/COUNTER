@@ -1,16 +1,3 @@
-/README.md
-/spec
 /backend/venv
 /frontend/dist
 /frontend/node_modules
-/backend/venv
-/backend/.env
-/.pids
-/logs
-/frontend/dist
-/frontend/node_modules
-*.log
-/reset_db.py
-/reset.bat
-/start.bat
-/stop.bat
