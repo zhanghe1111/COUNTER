@@ -8,6 +8,7 @@ from app.db.models import Player, Room, User, EventRecord
 from app.api.v1.auth import get_current_user
 from app.schemas.confirmation import ConfirmationRequest, RoomConfirmationStatus, ConfirmationStatus
 from app.api.v1.websocket import manager
+from datetime import datetime, timezone
 
 router = APIRouter()
 
@@ -85,6 +86,9 @@ def submit_confirmation(
     if confirmation.confirmed:
         player.confirmed_round = room.current_round
 
+    db.commit()
+
+    db.query(Room).filter(Room.id == room_id).update({"last_activity": datetime.now(timezone.utc)})
     db.commit()
 
     if confirmation.confirmed:
@@ -188,6 +192,9 @@ def advance_to_next_round(
 
     db.commit()
     db.refresh(room)
+
+    db.query(Room).filter(Room.id == room_id).update({"last_activity": datetime.now(timezone.utc)})
+    db.commit()
 
     event_data = {
         "new_round": room.current_round,

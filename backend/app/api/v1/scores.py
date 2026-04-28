@@ -9,21 +9,9 @@ from app.db.models import Score, Room, Player, User, PendingScore, EventRecord
 from app.api.v1.auth import get_current_user
 from app.schemas.score import ScoreCreate, ScoreResponse, ScoreUpdate
 from app.api.v1.websocket import manager
+from datetime import datetime, timezone
 
 router = APIRouter()
-
-
-def _check_player_status(player: Player, room: Room, db: Session):
-    if room.elimination_score is not None and player.current_score <= room.elimination_score:
-        player.status = "eliminated"
-    elif room.winning_score is not None and player.current_score >= room.winning_score:
-        first_winner = db.query(Player).filter(
-            Player.room_id == room.id,
-            Player.status == "won"
-        ).first()
-        if not first_winner:
-            player.is_first_winner = True
-        player.status = "won"
 
 
 def _create_event(room_id: int, event_type: str, content: dict, db: Session):
@@ -73,7 +61,6 @@ async def create_score(
     db.add(db_score)
     all_scores.append(db_score)
     submitter.current_score += winner_score_value
-    _check_player_status(submitter, room, db)
 
     pending_records = []
     for target_id in targets:
@@ -96,7 +83,6 @@ async def create_score(
         db.add(db_target_score)
         all_scores.append(db_target_score)
         target_player.current_score -= score.score
-        _check_player_status(target_player, room, db)
 
         pending = PendingScore(
             room_id=score.room_id,
@@ -123,6 +109,9 @@ async def create_score(
     }
     _create_event(score.room_id, "score_collected", event_data, db)
 
+    db.commit()
+
+    db.query(Room).filter(Room.id == score.room_id).update({"last_activity": datetime.now(timezone.utc)})
     db.commit()
 
     for ps in all_scores:
@@ -216,17 +205,6 @@ def update_score(
         db_score.score = score_update.score
         player.current_score += score_diff
 
-        if room.elimination_score is not None and player.current_score <= room.elimination_score:
-            player.status = "eliminated"
-        elif room.winning_score is not None and player.current_score >= room.winning_score:
-            first_winner = db.query(Player).filter(
-                Player.room_id == room.id,
-                Player.status == "won"
-            ).first()
-            if not first_winner:
-                player.is_first_winner = True
-            player.status = "won"
-
     if score_update.details is not None:
         db_score.details = score_update.details
 
@@ -264,9 +242,6 @@ def delete_score(
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied")
 
     player.current_score -= db_score.score
-
-    if room.elimination_score is not None and player.current_score > room.elimination_score:
-        player.status = "active"
 
     db.delete(db_score)
     db.commit()

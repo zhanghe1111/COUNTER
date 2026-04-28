@@ -1,9 +1,11 @@
 <script setup lang="ts">
 import { RouterView } from 'vue-router'
+import ToastContainer from '@/components/ToastContainer.vue'
 </script>
 
 <template>
   <div id="app">
+    <ToastContainer />
     <RouterView v-slot="{ Component }">
       <transition name="page" mode="out-in">
         <component :is="Component" />
@@ -16,22 +18,20 @@ import { RouterView } from 'vue-router'
 #app {
   width: 100%;
   min-height: 100vh;
-  /* Removed overflow: hidden so scrolling works */
 }
 
-/* 页面切换动画 */
 .page-enter-active,
 .page-leave-active {
-  transition: opacity 0.3s ease, transform 0.3s ease;
+  transition: opacity 0.25s ease, transform 0.25s ease;
 }
 
 .page-enter-from {
   opacity: 0;
-  transform: translateY(10px);
+  transform: translateY(8px);
 }
 
 .page-leave-to {
   opacity: 0;
-  transform: translateY(-10px);
+  transform: translateY(-8px);
 }
 </style>

@@ -48,7 +48,7 @@ def get_room_chart_data(
         ).order_by(Score.round).all()
         
         # 计算每轮的累计分数
-        cumulative_score = room.base_score
+        cumulative_score = 0
         scores_by_round = {}
         
         for score in player_scores:

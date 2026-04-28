@@ -3,7 +3,6 @@
 /backend/venv
 /frontend/dist
 /frontend/node_modules
-
 /backend/venv
 /backend/.env
 /.pids
@@ -11,3 +10,7 @@
 /frontend/dist
 /frontend/node_modules
 *.log
+/reset_db.py
+/reset.bat
+/start.bat
+/stop.bat

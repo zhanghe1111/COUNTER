@@ -88,6 +88,9 @@ async def accept_pending_score(
     _create_event(pending.room_id, "score_accepted", event_data, db)
     db.commit()
 
+    db.query(Room).filter(Room.id == pending.room_id).update({"last_activity": datetime.now(timezone.utc)})
+    db.commit()
+
     await manager.broadcast(
         json.dumps({"type": "room_event", "event_type": "score_accepted", "data": event_data}),
         pending.room_id
@@ -170,6 +173,9 @@ async def reject_pending_score(
         "batch_id": batch_id
     }
     _create_event(room_id, "score_rejected", event_data, db)
+    db.commit()
+
+    db.query(Room).filter(Room.id == room_id).update({"last_activity": datetime.now(timezone.utc)})
     db.commit()
 
     await manager.broadcast(

@@ -3,6 +3,7 @@ from sqlalchemy.orm import Session
 import random
 import string
 import json
+from datetime import datetime, timezone
 
 from app.db.database import get_db
 from app.db.models import Room, Player, User, EventRecord, EndGameVote, LeaveRequest, Score, PendingScore
@@ -14,8 +15,7 @@ router = APIRouter()
 
 
 def generate_room_code(length=6):
-    letters = string.ascii_uppercase + string.digits
-    return ''.join(random.choice(letters) for i in range(length))
+    return ''.join(random.choice(string.digits) for i in range(length))
 
 
 def _create_event(room_id: int, event_type: str, content: dict, db: Session):
@@ -37,7 +37,7 @@ def _reset_game_state(room_id: int, db: Session):
 
     players = db.query(Player).filter(Player.room_id == room_id).all()
     for p in players:
-        p.current_score = room.base_score
+        p.current_score = 0
         p.status = "active"
         p.is_first_winner = False
         p.is_confirmed = False
@@ -46,6 +46,24 @@ def _reset_game_state(room_id: int, db: Session):
 
     room.current_round = 1
     room.status = "open"
+
+
+def _finish_game_state(room_id: int, db: Session):
+    room = db.query(Room).filter(Room.id == room_id).first()
+    if not room:
+        return
+
+    db.query(EndGameVote).filter(EndGameVote.room_id == room_id).delete()
+    db.query(LeaveRequest).filter(LeaveRequest.room_id == room_id).delete()
+    db.query(PendingScore).filter(PendingScore.room_id == room_id).delete()
+
+    players = db.query(Player).filter(Player.room_id == room_id).all()
+    for p in players:
+        p.status = "finished"
+        p.is_confirmed = False
+        p.is_ready = False
+
+    room.status = "finished"
 
 
 def _broadcast(room_id: int, event_type: str, data: dict):
@@ -67,6 +85,10 @@ def _broadcast(room_id: int, event_type: str, data: dict):
         loop.close()
 
 
+def _touch_room(room_id: int, db: Session):
+    db.query(Room).filter(Room.id == room_id).update({"last_activity": datetime.now(timezone.utc)})
+
+
 @router.post("", response_model=RoomResponse)
 def create_room(
     room: RoomCreate,
@@ -86,9 +108,6 @@ def create_room(
         name=room.name,
         password_hash=password_hash,
         game_type=room.game_type,
-        base_score=room.base_score or 0.0,
-        elimination_score=room.elimination_score,
-        winning_score=room.winning_score,
         created_by=current_user.id,
         status="open"
     )
@@ -100,7 +119,7 @@ def create_room(
         room_id=db_room.id,
         user_id=current_user.id,
         nickname=current_user.nickname,
-        current_score=db_room.base_score,
+        current_score=0,
         status="active"
     )
     db.add(db_player)
@@ -111,9 +130,6 @@ def create_room(
         room_code=db_room.room_code,
         name=db_room.name,
         game_type=db_room.game_type,
-        base_score=db_room.base_score,
-        elimination_score=db_room.elimination_score,
-        winning_score=db_room.winning_score,
         created_by=db_room.created_by,
         status=db_room.status,
         current_round=db_room.current_round,
@@ -123,19 +139,17 @@ def create_room(
 
 @router.get("", response_model=list[RoomResponse])
 def get_rooms(db: Session = Depends(get_db)):
-    rooms = db.query(Room).filter(Room.status != "closed").all()
+    rooms = db.query(Room).filter(Room.status.in_(["open", "playing"])).all()
     return [
         RoomResponse(
             id=room.id,
             room_code=room.room_code,
             name=room.name,
             game_type=room.game_type,
-            base_score=room.base_score,
-            elimination_score=room.elimination_score,
-            winning_score=room.winning_score,
             created_by=room.created_by,
             status=room.status,
             current_round=room.current_round,
+            has_password=bool(room.password_hash),
             created_at=room.created_at
         )
         for room in rooms
@@ -153,12 +167,10 @@ def get_room(room_code: str, db: Session = Depends(get_db)):
         room_code=room.room_code,
         name=room.name,
         game_type=room.game_type,
-        base_score=room.base_score,
-        elimination_score=room.elimination_score,
-        winning_score=room.winning_score,
         created_by=room.created_by,
         status=room.status,
         current_round=room.current_round,
+        has_password=bool(room.password_hash),
         created_at=room.created_at
     )
 
@@ -228,7 +240,7 @@ async def join_room(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Room is closed")
 
     if room.password_hash and not verify_password(room_join.password, room.password_hash):
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Incorrect room password")
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Incorrect room password")
 
     existing_player = db.query(Player).filter(
         Player.room_id == room.id,
@@ -241,12 +253,14 @@ async def join_room(
         room_id=room.id,
         user_id=current_user.id,
         nickname=current_user.nickname,
-        current_score=room.base_score,
+        current_score=0,
         status="active"
     )
     db.add(db_player)
     db.commit()
     db.refresh(db_player)
+
+    _touch_room(room.id, db)
 
     join_event_data = {"player_id": db_player.id, "player_nickname": db_player.nickname}
     _create_event(room.id, "player_joined", join_event_data, db)
@@ -278,6 +292,8 @@ def toggle_ready(
 
     player.is_ready = not player.is_ready
     db.commit()
+
+    _touch_room(room.id, db)
 
     _broadcast(room.id, "ready_update", {
         "player_id": player.id,
@@ -319,6 +335,8 @@ def start_game(
     room.current_round = 1
     db.commit()
 
+    _touch_room(room.id, db)
+
     _broadcast(room.id, "game_started", {"round": 1})
 
     return {"message": "Game started", "round": 1}
@@ -348,6 +366,8 @@ def propose_end_game(
         db.add(vote)
 
     db.commit()
+
+    _touch_room(room.id, db)
 
     _broadcast(room.id, "end_proposed", {
         "owner_player_id": next((p.id for p in players if p.user_id == current_user.id), None),
@@ -386,6 +406,8 @@ def vote_end_game(
     vote.is_approved = True
     db.commit()
 
+    _touch_room(room.id, db)
+
     _broadcast(room.id, "end_voted", {
         "player_id": player.id,
         "player_nickname": player.nickname,
@@ -397,15 +419,15 @@ def vote_end_game(
     total_players = db.query(Player).filter(Player.room_id == room.id).count()
 
     if all_approved:
-        _reset_game_state(room.id, db)
+        _finish_game_state(room.id, db)
         db.commit()
 
         _broadcast(room.id, "game_reset", {
             "reason": "all_agreed_end",
-            "message": "All players agreed to end the game. Room has been reset."
+            "message": "All players agreed to end the game."
         })
 
-        return {"message": "All agreed. Game has been reset.", "game_reset": True, "all_approved": True}
+        return {"message": "Game finished.", "game_reset": True, "all_approved": True}
 
     return {"message": "Vote recorded", "game_reset": False, "all_approved": False}
 
@@ -467,6 +489,8 @@ def request_leave_game(
         db.add(lr)
         db.commit()
 
+        _touch_room(room.id, db)
+
         _broadcast(room.id, "leave_requested", {
             "player_id": player.id,
             "player_nickname": player.nickname,
@@ -479,6 +503,8 @@ def request_leave_game(
         _create_event(room.id, "player_left", event_data, db)
         db.delete(player)
         db.commit()
+
+        _touch_room(room.id, db)
 
         _broadcast(room.id, "player_left", event_data)
 
@@ -520,7 +546,7 @@ def approve_leave_request(
 
         remaining_players = db.query(Player).filter(Player.room_id == room.id).all()
         for p in remaining_players:
-            p.current_score = room.base_score
+            p.current_score = 0
             p.status = "active"
             p.is_first_winner = False
             p.is_confirmed = False
@@ -537,6 +563,8 @@ def approve_leave_request(
     db.query(LeaveRequest).filter(LeaveRequest.room_id == room.id).delete()
 
     db.commit()
+
+    _touch_room(room.id, db)
 
     _broadcast(room.id, "leave_approved", {
         "player_id": lr.player_id,
@@ -566,6 +594,8 @@ def reject_leave_request(
 
     lr.status = "rejected"
     db.commit()
+
+    _touch_room(room.id, db)
 
     _broadcast(room.id, "leave_rejected", {
         "player_id": lr.player_id,
@@ -602,6 +632,8 @@ def leave_room(
     _create_event(room.id, "player_left", event_data, db)
     db.delete(player)
     db.commit()
+
+    _touch_room(room.id, db)
 
     _broadcast(room.id, "player_left", event_data)
 

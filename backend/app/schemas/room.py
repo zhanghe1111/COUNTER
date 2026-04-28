@@ -6,9 +6,6 @@ from typing import Optional
 class RoomBase(BaseModel):
     name: str = Field(..., min_length=1, max_length=100)
     game_type: str = Field(..., pattern="^(add_subtract|add_only)$")
-    base_score: Optional[float] = 0.0
-    elimination_score: Optional[float] = None
-    winning_score: Optional[float] = None
     password: Optional[str] = None
 
 
@@ -22,6 +19,7 @@ class RoomResponse(RoomBase):
     created_by: int
     status: str
     current_round: int = 1
+    has_password: bool = False
     created_at: datetime
 
     class Config:

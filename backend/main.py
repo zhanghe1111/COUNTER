@@ -1,18 +1,48 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
+import asyncio
+from datetime import datetime, timezone, timedelta
 
 from app.core.config import settings
-from app.db.database import engine, Base
+from app.db.database import engine, Base, SessionLocal
+from app.db.models import Room
 from app.api import api_router
+
+
+async def cleanup_stale_rooms():
+    while True:
+        try:
+            db = SessionLocal()
+            try:
+                cutoff = datetime.now(timezone.utc) - timedelta(hours=2)
+                stale = db.query(Room).filter(
+                    Room.status.in_(["open", "playing", "finished"]),
+                    Room.last_activity < cutoff
+                ).all()
+                for room in stale:
+                    old_status = room.status
+                    room.status = "closed"
+                    print(f"[cleanup] Room {room.room_code} (id={room.id}) closed after 2h inactivity (was {old_status})")
+                if stale:
+                    db.commit()
+            finally:
+                db.close()
+        except Exception as e:
+            print(f"[cleanup] Error: {e}")
+        await asyncio.sleep(600)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # 启动时创建数据库表
     Base.metadata.create_all(bind=engine)
+    task = asyncio.create_task(cleanup_stale_rooms())
     yield
-    # 关闭时的清理工作
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
 
 
 app = FastAPI(
@@ -21,16 +51,14 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-# 配置CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # 在生产环境中应该设置具体的前端地址
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# 注册路由
 app.include_router(api_router, prefix="/api")
 
 
