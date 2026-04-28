@@ -52,6 +52,45 @@
 - Node.js 18+
 - PostgreSQL 15+
 
+### 数据库创建
+
+确保 PostgreSQL 已安装并启动后，创建数据库和用户：
+
+**Windows（pgAdmin）或 Linux/Mac（命令行）均可。以下以命令行方式为例：**
+
+```bash
+# 连接 PostgreSQL
+sudo -u postgres psql      # Linux/Mac
+psql -U postgres            # Windows (如已配置环境变量)
+```
+
+在 psql 中执行以下 SQL：
+
+```sql
+-- 创建数据库用户（请将 <password> 替换为实际密码）
+CREATE USER counter_user WITH PASSWORD '<password>';
+
+-- 创建数据库
+CREATE DATABASE counter_db OWNER counter_user;
+
+-- 授予权限
+GRANT ALL PRIVILEGES ON DATABASE counter_db TO counter_user;
+```
+
+完成后退出 psql：
+
+```sql
+\q
+```
+
+验证连接是否成功：
+
+```bash
+psql -U counter_user -d counter_db -h localhost
+```
+
+> 项目启动时，FastAPI 的 `lifespan` 事件会自动调用 `Base.metadata.create_all()` 创建所有表结构，无需手动执行建表脚本。
+
 ### 1. 克隆项目
 
 ```bash
