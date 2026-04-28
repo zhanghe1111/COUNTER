@@ -3,11 +3,6 @@ from datetime import datetime
 from typing import List, Optional
 
 
-class ConfirmationBase(BaseModel):
-    room_id: int
-    round: int
-
-
 class ConfirmationStatus(BaseModel):
     player_id: int
     nickname: str

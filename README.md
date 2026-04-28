@@ -10,7 +10,6 @@
 - **分数确认** — 双向确认机制，确保每笔分数记录准确无误
 - **游戏管理** — 准备/开始游戏、结束投票、中途离场请求
 - **历史记录** — 完整的游戏记录和分数详情
-- **数据可视化** — 使用 ECharts 展示分数趋势图表
 - **自动清理** — 超过 2 小时无活动的房间自动关闭
 - **用户系统** — 注册登录、昵称修改、个人游戏记录
 
@@ -40,7 +39,6 @@
 | Pinia | 状态管理 |
 | Vue Router | 路由管理 |
 | Axios | HTTP 客户端 |
-| ECharts / vue-echarts | 图表可视化 |
 | Iconify | 图标库 |
 | WebSocket | 实时通信 |
 
@@ -166,7 +164,6 @@ COUNTER/
 │   │   │       ├── scores.py        # 分数记录
 │   │   │       ├── pending_scores.py # 待确认分数
 │   │   │       ├── confirmations.py  # 确认状态
-│   │   │       ├── charts.py        # 图表数据
 │   │   │       ├── events.py        # 事件日志
 │   │   │       └── websocket.py     # WebSocket
 │   │   ├── core/
@@ -301,4 +298,4 @@ User (用户)
 
 ### 前端代理配置
 
-`vite.config.ts` 中配置了开发代理，前端请求 `/api` 自动转发到后端 `8000` 端口，WebSocket 连接 `/ws` 也做了相应转发。
+`vite.config.ts` 中配置了开发代理，前端请求 `/api` 自动转发到后端 `8000` 端口。

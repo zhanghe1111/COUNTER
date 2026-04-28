@@ -52,7 +52,6 @@ class Player(Base):
     joined_at = Column(DateTime(timezone=True), server_default=func.now())
     current_score = Column(Float, default=0.0, nullable=False)
     status = Column(String(20), default="active", nullable=False)
-    is_first_winner = Column(Boolean, default=False, nullable=False)
     is_confirmed = Column(Boolean, default=False, nullable=False)
     confirmed_round = Column(Integer, default=0, nullable=False)
     is_ready = Column(Boolean, default=False, nullable=False)

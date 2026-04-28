@@ -39,7 +39,6 @@ def _reset_game_state(room_id: int, db: Session):
     for p in players:
         p.current_score = 0
         p.status = "active"
-        p.is_first_winner = False
         p.is_confirmed = False
         p.confirmed_round = 0
         p.is_ready = False
@@ -548,7 +547,6 @@ def approve_leave_request(
         for p in remaining_players:
             p.current_score = 0
             p.status = "active"
-            p.is_first_winner = False
             p.is_confirmed = False
             p.confirmed_round = 0
             p.is_ready = False
